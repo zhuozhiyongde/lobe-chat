@@ -4,8 +4,8 @@ services:
     image: alpine
     container_name: lobe-network
     ports:
-      - '${MINIO_PORT}:${MINIO_PORT}' # MinIO API
-      - '9001:9001' # MinIO Console
+      - '${RUSTFS_PORT}:9000' # RustFS API
+      - '${RUSTFS_CONSOLE_PORT}:9001' # RustFS Console
       - '${LOGTO_PORT}:${LOGTO_PORT}' # Logto
       - '3002:3002' # Logto Admin
       - '${LOBE_PORT}:3210' # LobeChat
@@ -17,7 +17,7 @@ services:
     image: pgvector/pgvector:pg16
     container_name: lobe-postgres
     ports:
-      - '5432:5432'
+      - '${POSTGRES_PORT}:5432'
     volumes:
       - './data:/var/lib/postgresql/data'
     environment:
@@ -36,7 +36,7 @@ services:
     image: redis:7-alpine
     container_name: lobe-redis
     ports:
-      - '6379:6379'
+      - '${REDIS_PORT}:6379'
     command: redis-server --save 60 1000 --appendonly yes
     volumes:
       - 'redis_data:/data'
@@ -49,19 +49,19 @@ services:
     networks:
       - lobe-network
 
-  minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    container_name: lobe-minio
-    network_mode: "service:network-service"
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: lobe-rustfs
+    network_mode: 'service:network-service'
     volumes:
-      - './s3_data:/etc/minio/data'
+      - './rustfs-data:/data'
     environment:
-      - 'MINIO_ROOT_USER=${MINIO_ROOT_USER}'
-      - 'MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}'
-      - 'MINIO_API_CORS_ALLOW_ORIGIN=http://localhost:${LOBE_PORT}'
+      - 'RUSTFS_CONSOLE_ENABLE=true'
+      - 'RUSTFS_ACCESS_KEY=${RUSTFS_ROOT_ACCESS_KEY}'
+      - 'RUSTFS_SECRET_KEY=${RUSTFS_ROOT_SECRET_KEY}'
     restart: always
-    command: >
-      server /etc/minio/data --address ":${MINIO_PORT}" --console-address ":9001"
+    env_file:
+      - .env
 
   logto:
     image: svhd/logto
@@ -87,7 +87,7 @@ services:
         condition: service_healthy
       network-service:
         condition: service_started
-      minio:
+      rustfs:
         condition: service_started
       logto:
         condition: service_started
@@ -102,9 +102,9 @@ services:
       - 'NEXTAUTH_URL=http://localhost:${LOBE_PORT}/api/auth'
       - 'AUTH_LOGTO_ISSUER=http://localhost:${LOGTO_PORT}/oidc'
       - 'DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgresql:5432/${LOBE_DB_NAME}'
-      - 'S3_ENDPOINT=http://localhost:${MINIO_PORT}'
-      - 'S3_BUCKET=${MINIO_LOBE_BUCKET}'
-      - 'S3_PUBLIC_DOMAIN=http://localhost:${MINIO_PORT}'
+      - 'S3_BUCKET=${S3_BUCKET}'
+      - 'S3_ENDPOINT=${S3_ENDPOINT}'
+      - 'S3_PUBLIC_DOMAIN=${S3_PUBLIC_DOMAIN}'
       - 'S3_ENABLE_PATH_STYLE=1'
       - 'REDIS_URL=redis://redis:6379'
       - 'REDIS_PREFIX=lobechat'
@@ -116,7 +116,7 @@ services:
 volumes:
   data:
     driver: local
-  s3_data:
+  rustfs_data:
     driver: local
   redis_data:
     driver: local

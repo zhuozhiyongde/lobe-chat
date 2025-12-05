@@ -14,6 +14,8 @@ tags:
 
 <Callout type={'info'}>
 由于近期 MinIO 的商业化策略调整，我们不再推荐使用 MinIO 作为 S3 存储服务，建议所有仍在使用 MinIO 的用户迁移至 [RustFS](https://rustfs.com/) 或者 [ceph](https://ceph.io/) 等开源的 S3 存储服务或者腾讯云对象存储、Cloudflare R2 等云服务商的 S3 存储服务。
+
+注意，RustFS 目前仍处于积极开发阶段，可能存在部分 corner case。如果您对文件系统的性能和安全有非常高的标准，我们推荐您使用 ceph 或者成熟的云服务商 S3。但若仅为 LobeChat 使用，RustFS 应当完全足以胜任需求。
 </Callout>
 
 ## 配置步骤

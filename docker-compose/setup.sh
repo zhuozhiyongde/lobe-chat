@@ -25,7 +25,8 @@ fi
 
 # Arg: --url
 # Determine the source URL to download files
-SOURCE_URL="https://raw.githubusercontent.com/lobehub/lobe-chat/main"
+# SOURCE_URL="https://raw.githubusercontent.com/lobehub/lobe-chat/main"
+SOURCE_URL="https://raw.githubusercontent.com/zhuozhiyongde/lobe-chat/feat/rustfs"
 
 # Arg: --host
 # Determine the server host
@@ -183,10 +184,10 @@ show_message() {
         tips_already_installed)
             case $LANGUAGE in
                 zh_CN)
-                    echo "检测到您已经运行过 LobeChat Database，本安装程序只能完成初始化配置，并不能重复安装。如果你需要重新安装，请删除 data 和 s3_data 文件夹。"
+                    echo "检测到您已经运行过 LobeChat Database，本安装程序只能完成初始化配置，并不能重复安装。如果你需要重新安装，请删除 data 和 rustfs-data 文件夹。"
                 ;;
                 *)
-                    echo "It is detected that you have run LobeChat Database. This installation program can only complete the initialization configuration and cannot be reinstalled. If you need to reinstall, please delete the data and s3_data folders."
+                    echo "It is detected that you have run LobeChat Database. This installation program can only complete the initialization configuration and cannot be reinstalled. If you need to reinstall, please delete the data and rustfs-data folders."
                 ;;
             esac
         ;;
@@ -431,6 +432,19 @@ ask() {
     ask_result=$(echo "$result" | xargs)
 }
 
+# Read a value from the generated .env file
+get_env_value() {
+    local key="$1"
+    if [ ! -f ".env" ]; then
+        echo ""
+        return
+    fi
+    local line
+    line=$(grep -m 1 "^$key=" .env)
+    line=${line#*=}
+    echo "${line//$'\r'/}"
+}
+
 ####################
 ## Main Process ##
 ####################
@@ -452,10 +466,19 @@ ENV_EXAMPLES=(
 # Default values
 CASDOOR_PASSWORD="pswd123"
 CASDOOR_SECRET="CASDOOR_SECRET"
-MINIO_ROOT_PASSWORD="YOUR_MINIO_PASSWORD"
+RUSTFS_ROOT_ACCESS_KEY="rustfsadmin"
+RUSTFS_ROOT_SECRET_KEY="YOUR_RUSTFS_SECRET"
+S3_BUCKET="lobe"
 CASDOOR_HOST="localhost:8000"
-MINIO_HOST="localhost:9000"
+RUSTFS_HOST="localhost:9000"
 PROTOCOL="http"
+POSTGRES_PORT="5432"
+REDIS_PORT="6379"
+RUSTFS_PORT="9000"
+RUSTFS_CONSOLE_PORT="9001"
+GRAFANA_PORT="3000"
+OTEL_HTTP_PORT="4318"
+OTEL_GRPC_PORT="4317"
 
 # If no language is specified, ask the user to choose
 if [ -z "$LANGUAGE" ]; then
@@ -493,21 +516,76 @@ section_download_files(){
         download_file "$SOURCE_URL/${ENV_EXAMPLES[1]}" ".env"
     fi
 }
-# If the folder `data` or `s3_data` exists, warn the user
-if [ -d "data" ] || [ -d "s3_data" ]; then
+
+section_configurate_ports() {
+    if [[ "$LANGUAGE" == "zh_CN" ]]; then
+        echo "是否自定义宿主机上对外暴露的端口？"
+    else
+        echo "Would you like to customize the host ports for exposed services?"
+    fi
+    ask "(y/n)" "n"
+    if [[ "$ask_result" != "y" ]]; then
+        return 0
+    fi
+    local configs=(
+        "LOBE_PORT|3210|LobeChat (exposes internal 3210)"
+        "CASDOOR_PORT|8000|Casdoor (exposes internal 8000)"
+        "POSTGRES_PORT|5432|PostgreSQL (exposes internal 5432)"
+        "REDIS_PORT|6379|Redis (exposes internal 6379)"
+        "RUSTFS_PORT|9000|RustFS API (exposes internal 9000)"
+        "RUSTFS_CONSOLE_PORT|9001|RustFS Console (exposes internal 9001)"
+        "GRAFANA_PORT|3000|Grafana (exposes internal 3000)"
+        "OTEL_HTTP_PORT|4318|OTel HTTP (exposes internal 4318)"
+        "OTEL_GRPC_PORT|4317|OTel gRPC (exposes internal 4317)"
+    )
+    for item in "${configs[@]}"; do
+        IFS='|' read -r key default desc <<<"$item"
+        local current
+        current=$(get_env_value "$key")
+        if [ -z "$current" ]; then
+            current="$default"
+        fi
+        ask "$desc" "$current"
+        local value="$ask_result"
+        sed "${SED_INPLACE_ARGS[@]}" "s#^${key}=.*#${key}=${value}#" .env
+        case "$key" in
+            LOBE_PORT) LOBE_PORT="$value" ;;
+            CASDOOR_PORT) CASDOOR_PORT="$value" ;;
+            POSTGRES_PORT) POSTGRES_PORT="$value" ;;
+            REDIS_PORT) REDIS_PORT="$value" ;;
+            RUSTFS_PORT) RUSTFS_PORT="$value" ;;
+            RUSTFS_CONSOLE_PORT) RUSTFS_CONSOLE_PORT="$value" ;;
+            GRAFANA_PORT) GRAFANA_PORT="$value" ;;
+            OTEL_HTTP_PORT) OTEL_HTTP_PORT="$value" ;;
+            OTEL_GRPC_PORT) OTEL_GRPC_PORT="$value" ;;
+        esac
+    done
+}
+# If the folder `data` or `rustfs-data` exists, warn the user
+if [ -d "data" ] || [ -d "rustfs-data" ]; then
     show_message "tips_already_installed"
     exit 0
 else
     section_download_files
+    mkdir -p rustfs-data
+    chmod 777 rustfs-data
+    section_configurate_ports
 fi
 
 section_configurate_host() {
     DEPLOY_MODE=$ask_result
     show_message "host_regenerate"
+    local env_rustfs_port
+    env_rustfs_port=$(get_env_value "RUSTFS_PORT")
+    if [ -n "$env_rustfs_port" ]; then
+        RUSTFS_PORT="$env_rustfs_port"
+    fi
     # If run in local mode, skip this step
     if [[ "$DEPLOY_MODE" == "2" ]]; then
         HOST="localhost:3210"
         LOBE_HOST="$HOST"
+        RUSTFS_HOST="localhost:${RUSTFS_PORT}"
+        CASDOOR_HOST="localhost:${CASDOOR_PORT}"
         return 0
     fi
 
@@ -545,10 +623,10 @@ section_configurate_host() {
             echo "LobeChat" $(show_message "ask_domain" "example.com")
             ask "(example.com)"
             LOBE_HOST="$ask_result"
-            # If user use domain mode, ask for the domain of Minio and Casdoor
-            echo "Minio S3 API" $(show_message "ask_domain" "minio.example.com")
-            ask "(minio.example.com)"
-            MINIO_HOST="$ask_result"
+            # If user use domain mode, ask for the domain of RustFS and Casdoor
+            echo "RustFS S3 API" $(show_message "ask_domain" "s3.example.com")
+            ask "(s3.example.com)"
+            RUSTFS_HOST="$ask_result"
             echo "Casdoor API" $(show_message "ask_domain" "auth.example.com")
             ask "(auth.example.com)"
             CASDOOR_HOST="$ask_result"
@@ -563,7 +641,7 @@ section_configurate_host() {
             HOST="$ask_result"
             # If user use ip mode, append the port to the host
             LOBE_HOST="${HOST}:3210"
-            MINIO_HOST="${HOST}:9000"
+            RUSTFS_HOST="${HOST}:${RUSTFS_PORT}"
             CASDOOR_HOST="${HOST}:8000"
             # Setup callback url for Casdoor
             sed "${SED_INPLACE_ARGS[@]}" "s/"localhost:3210"/${LOBE_HOST}/" init_data.json
@@ -581,8 +659,8 @@ section_configurate_host() {
     sed "${SED_INPLACE_ARGS[@]}" "s#^AUTH_CASDOOR_ISSUER=.*#AUTH_CASDOOR_ISSUER=$PROTOCOL://$CASDOOR_HOST#" .env
     sed "${SED_INPLACE_ARGS[@]}" "s#^origin=.*#origin=$PROTOCOL://$CASDOOR_HOST#" .env
     # s3 related
-    sed "${SED_INPLACE_ARGS[@]}" "s#^S3_PUBLIC_DOMAIN=.*#S3_PUBLIC_DOMAIN=$PROTOCOL://$MINIO_HOST#" .env
-    sed "${SED_INPLACE_ARGS[@]}" "s#^S3_ENDPOINT=.*#S3_ENDPOINT=$PROTOCOL://$MINIO_HOST#" .env
+    sed "${SED_INPLACE_ARGS[@]}" "s#^S3_PUBLIC_DOMAIN=.*#S3_PUBLIC_DOMAIN=$PROTOCOL://$RUSTFS_HOST#" .env
+    sed "${SED_INPLACE_ARGS[@]}" "s#^S3_ENDPOINT=.*#S3_ENDPOINT=$PROTOCOL://$RUSTFS_HOST#" .env
     
 
     # Check if env modified success
@@ -665,24 +743,151 @@ section_regenerate_secrets() {
             echo $(show_message "security_secrect_regenerate_failed") "CASDOOR_PASSWORD in \`init_data.json\`"
         fi
     fi
-    # Generate Minio S3 User Password
-    MINIO_ROOT_PASSWORD=$(generate_key 8)
+    # Generate RustFS root access key
+    RUSTFS_ROOT_ACCESS_KEY=$(generate_key 20)
     if [ $? -ne 0 ]; then
-        echo $(show_message "security_secrect_regenerate_failed") "MINIO_ROOT_PASSWORD"
-        MINIO_ROOT_PASSWORD="YOUR_MINIO_PASSWORD"
+        echo $(show_message "security_secrect_regenerate_failed") "RUSTFS_ROOT_ACCESS_KEY"
+        RUSTFS_ROOT_ACCESS_KEY="rustfsadmin"
     else
-        # Search and replace the value of S3_SECRET_ACCESS_KEY in .env
-        sed "${SED_INPLACE_ARGS[@]}" "s#^MINIO_ROOT_PASSWORD=.*#MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}#" .env
+        sed "${SED_INPLACE_ARGS[@]}" "s#^RUSTFS_ROOT_ACCESS_KEY=.*#RUSTFS_ROOT_ACCESS_KEY=${RUSTFS_ROOT_ACCESS_KEY}#" .env
         if [ $? -ne 0 ]; then
-            echo $(show_message "security_secrect_regenerate_failed") "MINIO_ROOT_PASSWORD in \`.env\`"
+            echo $(show_message "security_secrect_regenerate_failed") "RUSTFS_ROOT_ACCESS_KEY in \`.env\`"
         fi
     fi
+
+    # Generate RustFS root secret key
+    RUSTFS_ROOT_SECRET_KEY=$(generate_key 40)
+    if [ $? -ne 0 ]; then
+        echo $(show_message "security_secrect_regenerate_failed") "RUSTFS_ROOT_SECRET_KEY"
+        RUSTFS_ROOT_SECRET_KEY="YOUR_RUSTFS_SECRET"
+    else
+        sed "${SED_INPLACE_ARGS[@]}" "s#^RUSTFS_ROOT_SECRET_KEY=.*#RUSTFS_ROOT_SECRET_KEY=${RUSTFS_ROOT_SECRET_KEY}#" .env
+        if [ $? -ne 0 ]; then
+            echo $(show_message "security_secrect_regenerate_failed") "RUSTFS_ROOT_SECRET_KEY in \`.env\`"
+        fi
+    fi
+
+    # Mirror credentials for the app S3 client
+    sed "${SED_INPLACE_ARGS[@]}" "s#^S3_ACCESS_KEY_ID=.*#S3_ACCESS_KEY_ID=${RUSTFS_ROOT_ACCESS_KEY}#" .env
+    sed "${SED_INPLACE_ARGS[@]}" "s#^S3_SECRET_ACCESS_KEY=.*#S3_SECRET_ACCESS_KEY=${RUSTFS_ROOT_SECRET_KEY}#" .env
 }
 
 show_message "ask_regenerate_secrets"
 ask "(y/n)" "y"
 if [[ "$ask_result" == "y" ]]; then
     section_regenerate_secrets
+fi
+
+section_prepare_rustfs_bucket() {
+    if ! command -v docker &> /dev/null ; then
+        echo "docker" $(show_message "tips_no_executable")
+        return 1
+    fi
+
+    if ! docker compose &> /dev/null ; then
+        echo "docker compose" $(show_message "tips_no_executable")
+        return 1
+    fi
+
+    if ! command -v curl &> /dev/null ; then
+        echo "curl" $(show_message "tips_no_executable")
+        return 1
+    fi
+
+    if ! curl --help all 2>&1 | grep -q -- '--aws-sigv4'; then
+        echo "WARN: current curl does not support '--aws-sigv4', skip automatic RustFS provisioning."
+        return 1
+    fi
+
+    if [ -z "$RUSTFS_ROOT_ACCESS_KEY" ]; then
+        RUSTFS_ROOT_ACCESS_KEY=$(get_env_value "RUSTFS_ROOT_ACCESS_KEY")
+    fi
+    if [ -z "$RUSTFS_ROOT_SECRET_KEY" ]; then
+        RUSTFS_ROOT_SECRET_KEY=$(get_env_value "RUSTFS_ROOT_SECRET_KEY")
+    fi
+    if [ -z "$S3_BUCKET" ]; then
+        S3_BUCKET=$(get_env_value "S3_BUCKET")
+    fi
+    local env_rustfs_port
+    env_rustfs_port=$(get_env_value "RUSTFS_PORT")
+    if [ -n "$env_rustfs_port" ]; then
+        RUSTFS_PORT="$env_rustfs_port"
+    fi
+    local local_endpoint="http://localhost:${RUSTFS_PORT}"
+
+    if ! docker compose up --detach network-service >/dev/null ; then
+        echo "Failed to start network-service via docker compose."
+        return 1
+    fi
+    if ! docker compose up --detach rustfs >/dev/null ; then
+        echo "Failed to start RustFS via docker compose."
+        return 1
+    fi
+    local retries=0
+    until curl -s -o /dev/null --connect-timeout 5 "$local_endpoint"; do
+        retries=$((retries + 1))
+        if [ $retries -gt 30 ]; then
+            echo "Failed to connect to RustFS at $local_endpoint"
+            docker compose logs rustfs | tail -n 20
+            docker compose stop rustfs >/dev/null 2>&1
+            docker compose stop network-service >/dev/null 2>&1
+            return 1
+        fi
+        sleep 2
+    done
+
+    local policy=$(cat <<POLICY
+{
+  "ID": "",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": [
+          "*"
+        ]
+      },
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${S3_BUCKET}/*"
+      ],
+      "Condition": {}
+    }
+  ]
+}
+POLICY
+)
+
+    local curl_base=(curl --silent --show-error --aws-sigv4 "aws:amz:us-east-1:s3" --user "${RUSTFS_ROOT_ACCESS_KEY}:${RUSTFS_ROOT_SECRET_KEY}")
+    local status=0
+
+    local bucket_status
+    bucket_status=$("${curl_base[@]}" -o /dev/null -w '%{http_code}' -X PUT "${local_endpoint}/${S3_BUCKET}" -H 'Content-Length: 0')
+    if [[ "$bucket_status" != "200" && "$bucket_status" != "204" && "$bucket_status" != "409" ]]; then
+        echo "Failed to ensure RustFS bucket (status: $bucket_status)"
+        status=1
+    fi
+
+    if [ $status -eq 0 ]; then
+        local policy_status
+        policy_status=$("${curl_base[@]}" -o /dev/null -w '%{http_code}' -X PUT "${local_endpoint}/${S3_BUCKET}?policy=" -H 'Content-Type: application/json' --data "$policy")
+        if [[ "$policy_status" != "200" && "$policy_status" != "204" ]]; then
+            echo "Failed to apply RustFS bucket policy (status: $policy_status)"
+            status=1
+        fi
+    fi
+
+    docker compose stop rustfs >/dev/null 2>&1
+    docker compose stop network-service >/dev/null 2>&1
+    return $status
+}
+
+if ! section_prepare_rustfs_bucket; then
+    echo "WARN: Failed to initialize RustFS automatically. Please ensure the bucket exists and has a public-read policy."
 fi
 
 section_init_database() {
@@ -728,18 +933,24 @@ fi
 
 section_display_configurated_report() {
     # Display configuration reports
+    if [ -z "$RUSTFS_ROOT_ACCESS_KEY" ]; then
+        RUSTFS_ROOT_ACCESS_KEY=$(get_env_value "RUSTFS_ROOT_ACCESS_KEY")
+    fi
+    if [ -z "$RUSTFS_ROOT_SECRET_KEY" ]; then
+        RUSTFS_ROOT_SECRET_KEY=$(get_env_value "RUSTFS_ROOT_SECRET_KEY")
+    fi
     echo $(show_message "security_secrect_regenerate_report")
     
     echo -e "LobeChat: \n  - URL: $PROTOCOL://$LOBE_HOST \n  - Username: user \n  - Password: ${CASDOOR_PASSWORD} "
     echo -e "Casdoor: \n  - URL: $PROTOCOL://$CASDOOR_HOST \n  - Username: admin \n  - Password: ${CASDOOR_PASSWORD}\n"
-    echo -e "Minio: \n  - URL: $PROTOCOL://$MINIO_HOST \n  - Username: admin\n  - Password: ${MINIO_ROOT_PASSWORD}\n"
+    echo -e "RustFS: \n  - URL: $PROTOCOL://$RUSTFS_HOST \n  - Access Key: ${RUSTFS_ROOT_ACCESS_KEY}\n  - Secret Key: ${RUSTFS_ROOT_SECRET_KEY}\n"
     
     # if user run in domain mode, diplay reverse proxy configuration
     if [[ "$DEPLOY_MODE" == "domain" ]]; then
         echo $(show_message "tips_add_reverse_proxy")
         printf "\n%s\t->\t%s\n" "$LOBE_HOST" "127.0.0.1:3210"
         printf "%s\t->\t%s\n" "$CASDOOR_HOST" "127.0.0.1:8000"
-        printf "%s\t->\t%s\n" "$MINIO_HOST" "127.0.0.1:9000"
+        printf "%s\t->\t%s\n" "$RUSTFS_HOST" "127.0.0.1:${RUSTFS_PORT}"
     fi
 
     # Display final message
